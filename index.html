@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agar.io Clone (High Performance)</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #0e0e10; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #f0f0f0; }
+        canvas { display: block; background: #121214; }
+        
+        .ui-panel {
+            position: absolute;
+            background: rgba(24, 24, 28, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(6px);
+            border-radius: 8px;
+            color: #e0e0e0;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+            pointer-events: auto;
+        }
+
+        #ui {
+            top: 15px; left: 15px;
+            padding: 12px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .control-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 12px;
+            color: #aaa;
+        }
+
+        .control-row input[type=range], .control-row input[type=checkbox] {
+            accent-color: #00adb5;
+            cursor: pointer;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 6px;
+            margin-top: 4px;
+        }
+
+        .btn {
+            background: #00adb5;
+            color: #fff;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .btn:hover { background: #008c93; }
+        .btn-secondary { background: #393e46; }
+        .btn-secondary:hover { background: #222831; }
+
+        #leaderboard {
+            top: 15px; right: 15px;
+            padding: 12px 18px;
+            min-width: 180px;
+            font-size: 13px;
+        }
+
+        #leaderboard h3 {
+            margin-bottom: 8px;
+            font-size: 14px;
+            border-bottom: 1px solid rgba(255,255,255,0.15);
+            padding-bottom: 4px;
+            color: #00adb5;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #leaderboard ol { padding-left: 20px; }
+        #leaderboard li { margin-bottom: 4px; }
+
+        #instructions {
+            bottom: 15px; left: 15px;
+            font-size: 12px;
+            padding: 8px 14px;
+            color: #aaa;
+        }
+
+        #saveStatus {
+            font-size: 11px;
+            color: #00ff66;
+            margin-left: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui" class="ui-panel">
+        <div>Score: <span id="score" style="color: #00adb5;">0</span></div>
+        <div class="control-row">
+            <label for="speedSlider">Game Speed:</label>
+            <input type="range" id="speedSlider" min="0.2" max="1.5" step="0.1" value="0.8">
+            <span id="speedVal">0.8x</span>
+        </div>
+        <div class="control-row">
+            <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+                <input type="checkbox" id="virusToggle" checked>
+                Enable Viruses (Green Spikes)
+            </label>
+        </div>
+        <div class="control-row">
+            <span>Session Save:</span>
+            <span id="saveStatus">None</span>
+        </div>
+        <div class="btn-group">
+            <button class="btn" id="btnSave">Save (S)</button>
+            <button class="btn btn-secondary" id="btnLoad">Load (L)</button>
+        </div>
+    </div>
+
+    <div id="leaderboard" class="ui-panel">
+        <h3>Leaderboard</h3>
+        <ol id="lb-list"></ol>
+    </div>
+
+    <div id="instructions" class="ui-panel">
+        <strong>Controls:</strong> Mouse = Move | Space = Split | W = Eject | S = Save | L = Load
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const WORLD_SIZE = 7000;
+        const FOOD_COUNT = 1500;
+        const VIRUS_COUNT = 60;
+        const BOT_COUNT = 25;
+
+        let gameSpeedMultiplier = 0.8;
+        let virusesEnabled = true;
+        let savedPlayerState = null;
+
+        const speedSlider = document.getElementById('speedSlider');
+        const speedValDisplay = document.getElementById('speedVal');
+        speedSlider.addEventListener('input', (e) => {
+            gameSpeedMultiplier = parseFloat(e.target.value);
+            speedValDisplay.innerText = `${gameSpeedMultiplier.toFixed(1)}x`;
+        });
+
+        const virusToggle = document.getElementById('virusToggle');
+        virusToggle.addEventListener('change', (e) => {
+            virusesEnabled = e.target.checked;
+            if (!virusesEnabled) {
+                viruses = [];
+            } else {
+                viruses = [];
+                for (let i = 0; i < VIRUS_COUNT; i++) spawnVirus();
+            }
+        });
+
+        document.getElementById('btnSave').addEventListener('click', savePlayerState);
+        document.getElementById('btnLoad').addEventListener('click', loadPlayerState);
+
+        let width = canvas.width = window.innerWidth;
+        let height = canvas.height = window.innerHeight;
+
+        window.addEventListener('resize', () => {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        });
+
+        const mouse = { x: width / 2, y: height / 2 };
+        window.addEventListener('mousemove', e => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        const colors = ['#ff2a6d', '#05d9e8', '#00ff66', '#ffb703', '#9d4edd', '#ff007f', '#00f5d4', '#f72585'];
+        function getRandomColor() {
+            return colors[Math.floor(Math.random() * colors.length)];
+        }
+
+        let foods = [];
+        let viruses = [];
+        let ejectedMasses = [];
+        let players = [];
+
+        class Cell {
+            constructor(x, y, radius, color, owner) {
+                this.x = x;
+                this.y = y;
+                this.radius = radius;
+                this.color = color;
+                this.owner = owner;
+                this.vx = 0;
+                this.vy = 0;
+                this.remergeTimer = 0;
+            }
+
+            get mass() {
+                return Math.floor(this.radius * this.radius / 10);
+            }
+
+            update() {
+                this.x += this.vx * gameSpeedMultiplier;
+                this.y += this.vy * gameSpeedMultiplier;
+                this.vx *= 0.9;
+                this.vy *= 0.9;
+
+                this.x = Math.max(this.radius, Math.min(WORLD_SIZE - this.radius, this.x));
+                this.y = Math.max(this.radius, Math.min(WORLD_SIZE - this.radius, this.y));
+
+                if (this.remergeTimer > 0) this.remergeTimer--;
+            }
+        }
+
+        class Player {
+            constructor(name, isBot = false) {
+                this.name = name;
+                this.isBot = isBot;
+                this.color = getRandomColor();
+                this.cells = [];
+                this.spawn();
+            }
+
+            spawn() {
+                if (!this.isBot && savedPlayerState && savedPlayerState.length > 0) {
+                    this.restoreFromSave();
+                    return;
+                }
+
+                this.cells = [
+                    new Cell(
+                        Math.random() * (WORLD_SIZE - 600) + 300,
+                        Math.random() * (WORLD_SIZE - 600) + 300,
+                        22,
+                        this.color,
+                        this
+                    )
+                ];
+            }
+
+            restoreFromSave() {
+                if (!savedPlayerState || savedPlayerState.length === 0) return;
+                this.cells = savedPlayerState.map(data => {
+                    let c = new Cell(data.x, data.y, data.radius, this.color, this);
+                    c.remergeTimer = data.remergeTimer;
+                    return c;
+                });
+            }
+
+            getTotalMass() {
+                return this.cells.reduce((sum, c) => sum + c.mass, 0);
+            }
+
+            getCenter() {
+                if (this.cells.length === 0) return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+                let sumX = 0, sumY = 0;
+                this.cells.forEach(c => { sumX += c.x; sumY += c.y; });
+                return { x: sumX / this.cells.length, y: sumY / this.cells.length };
+            }
+
+            update() {
+                if (this.cells.length === 0) {
+                    this.spawn();
+                    return;
+                }
+
+                let target = { x: 0, y: 0 };
+
+                if (!this.isBot) {
+                    const center = this.getCenter();
+                    const dx = mouse.x - width / 2;
+                    const dy = mouse.y - height / 2;
+                    target.x = center.x + dx;
+                    target.y = center.y + dy;
+                } else {
+                    target = this.getBotTarget();
+                }
+
+                this.cells.forEach(cell => {
+                    const dx = target.x - cell.x;
+                    const dy = target.y - cell.y;
+                    const dist = Math.hypot(dx, dy);
+
+                    if (dist > 1) {
+                        const baseSpeed = Math.max(1.2, 4.5 - cell.radius * 0.025);
+                        const speed = baseSpeed * gameSpeedMultiplier;
+                        cell.x += (dx / dist) * speed;
+                        cell.y += (dy / dist) * speed;
+                    }
+                    cell.update();
+                });
+
+                // Self-collision & Remerge
+                for (let i = 0; i < this.cells.length; i++) {
+                    for (let j = i + 1; j < this.cells.length; j++) {
+                        let c1 = this.cells[i];
+                        let c2 = this.cells[j];
+                        let dx = c2.x - c1.x;
+                        let dy = c2.y - c1.y;
+                        let dist = Math.hypot(dx, dy);
+                        let minDist = c1.radius + c2.radius;
+
+                        if (c1.remergeTimer > 0 || c2.remergeTimer > 0) {
+                            if (dist < minDist) {
+                                let overlap = minDist - dist;
+                                let angle = Math.atan2(dy, dx);
+                                c1.x -= Math.cos(angle) * overlap * 0.5;
+                                c1.y -= Math.sin(angle) * overlap * 0.5;
+                                c2.x += Math.cos(angle) * overlap * 0.5;
+                                c2.y += Math.sin(angle) * overlap * 0.5;
+                            }
+                        } else if (dist < minDist * 0.75) {
+                            let combinedArea = Math.PI * c1.radius * c1.radius + Math.PI * c2.radius * c2.radius;
+                            c1.radius = Math.sqrt(combinedArea / Math.PI);
+                            this.cells.splice(j, 1);
+                            j--;
+                        }
+                    }
+                }
+            }
+
+            getBotTarget() {
+                let center = this.getCenter();
+                let largestCell = this.cells.reduce((max, c) => c.radius > max.radius ? c : max, this.cells[0]);
+
+                for (let p of players) {
+                    if (p === this) continue;
+                    for (let c of p.cells) {
+                        if (c.radius > largestCell.radius * 1.15) {
+                            let dist = Math.hypot(c.x - center.x, c.y - center.y);
+                            if (dist < 400) {
+                                return { x: center.x - (c.x - center.x), y: center.y - (c.y - center.y) };
+                            }
+                        }
+                    }
+                }
+
+                for (let p of players) {
+                    if (p === this) continue;
+                    for (let c of p.cells) {
+                        if (c.radius * 1.15 < largestCell.radius) {
+                            let dist = Math.hypot(c.x - center.x, c.y - center.y);
+                            if (dist < 500) {
+                                return { x: c.x, y: c.y };
+                            }
+                        }
+                    }
+                }
+
+                let closestFood = null;
+                let minDist = Infinity;
+                foods.forEach(f => {
+                    let d = Math.hypot(f.x - center.x, f.y - center.y);
+                    if (d < minDist) {
+                        minDist = d;
+                        closestFood = f;
+                    }
+                });
+
+                return closestFood ? { x: closestFood.x, y: closestFood.y } : center;
+            }
+
+            split() {
+                if (this.cells.length >= 16) return;
+                let newCells = [];
+                this.cells.forEach(cell => {
+                    if (cell.radius >= 26 && this.cells.length + newCells.length < 16) {
+                        cell.radius /= Math.SQRT2;
+                        let angle = !this.isBot 
+                            ? Math.atan2(mouse.y - height / 2, mouse.x - width / 2)
+                            : Math.random() * Math.PI * 2;
+
+                        let newCell = new Cell(
+                            cell.x + Math.cos(angle) * cell.radius,
+                            cell.y + Math.sin(angle) * cell.radius,
+                            cell.radius,
+                            this.color,
+                            this
+                        );
+                        newCell.vx = Math.cos(angle) * 12;
+                        newCell.vy = Math.sin(angle) * 12;
+                        newCell.remergeTimer = 360;
+                        cell.remergeTimer = 360;
+                        newCells.push(newCell);
+                    }
+                });
+                this.cells.push(...newCells);
+            }
+
+            ejectMass() {
+                this.cells.forEach(cell => {
+                    if (cell.radius > 22) {
+                        let angle = Math.atan2(mouse.y - height / 2, mouse.x - width / 2);
+                        let lossArea = Math.PI * 11 * 11;
+                        let curArea = Math.PI * cell.radius * cell.radius;
+                        cell.radius = Math.sqrt((curArea - lossArea) / Math.PI);
+
+                        ejectedMasses.push({
+                            x: cell.x + Math.cos(angle) * (cell.radius + 15),
+                            y: cell.y + Math.sin(angle) * (cell.radius + 15),
+                            vx: Math.cos(angle) * 10,
+                            vy: Math.sin(angle) * 10,
+                            color: this.color,
+                            radius: 6
+                        });
+                    }
+                });
+            }
+        }
+
+        function savePlayerState() {
+            const human = players[0];
+            if (!human || human.cells.length === 0) return;
+            savedPlayerState = human.cells.map(c => ({
+                x: c.x,
+                y: c.y,
+                radius: c.radius,
+                remergeTimer: c.remergeTimer
+            }));
+            document.getElementById('saveStatus').innerText = `${human.getTotalMass()} Mass`;
+        }
+
+        function loadPlayerState() {
+            const human = players[0];
+            if (!human || !savedPlayerState) return;
+            human.restoreFromSave();
+        }
+
+        function init() {
+            foods = [];
+            viruses = [];
+            ejectedMasses = [];
+            players = [];
+
+            for (let i = 0; i < FOOD_COUNT; i++) spawnFood();
+            if (virusesEnabled) {
+                for (let i = 0; i < VIRUS_COUNT; i++) spawnVirus();
+            }
+
+            players.push(new Player("You", false));
+
+            const botNames = ['Apex', 'Vortex', 'Blobby', 'Titan', 'Shadow', 'Nova', 'Phantom', 'Cosmo', 'Orbit', 'Zeus', 'Echo', 'Drift', 'Spectre', 'Pulse', 'Blaze', 'Hyper', 'Kratos', 'Viper', 'Aether', 'Nexus', 'Cipher', 'Onyx', 'Sol', 'Lunar', 'Hydra', 'Kraken', 'Reaper', 'Zenith'];
+            for (let i = 0; i < BOT_COUNT; i++) {
+                players.push(new Player(botNames[i % botNames.length], true));
+            }
+        }
+
+        function spawnFood() {
+            foods.push({
+                x: Math.random() * WORLD_SIZE,
+                y: Math.random() * WORLD_SIZE,
+                radius: 3.5,
+                color: getRandomColor()
+            });
+        }
+
+        function spawnVirus() {
+            viruses.push({
+                x: Math.random() * (WORLD_SIZE - 400) + 200,
+                y: Math.random() * (WORLD_SIZE - 400) + 200,
+                radius: 34
+            });
+        }
+
+        window.addEventListener('keydown', e => {
+            if (e.code === 'Space') {
+                if (players[0]) players[0].split();
+            } else if (e.code === 'KeyW') {
+                if (players[0]) players[0].ejectMass();
+            } else if (e.code === 'KeyS') {
+                savePlayerState();
+            } else if (e.code === 'KeyL') {
+                loadPlayerState();
+            }
+        });
+
+        function gameLoop() {
+            ejectedMasses.forEach(m => {
+                m.x += m.vx * gameSpeedMultiplier;
+                m.y += m.vy * gameSpeedMultiplier;
+                m.vx *= 0.9;
+                m.vy *= 0.9;
+            });
+
+            players.forEach(p => p.update());
+
+            players.forEach(p => {
+                p.cells.forEach(cell => {
+                    // Fast Bounding Box Collision for Foods
+                    for (let i = foods.length - 1; i >= 0; i--) {
+                        let f = foods[i];
+                        if (Math.abs(cell.x - f.x) <= cell.radius && Math.abs(cell.y - f.y) <= cell.radius) {
+                            let area = Math.PI * cell.radius * cell.radius + Math.PI * f.radius * f.radius;
+                            cell.radius = Math.sqrt(area / Math.PI);
+                            foods.splice(i, 1);
+                            spawnFood();
+                        }
+                    }
+
+                    // Eat Ejected Mass
+                    for (let i = ejectedMasses.length - 1; i >= 0; i--) {
+                        let m = ejectedMasses[i];
+                        if (Math.hypot(cell.x - m.x, cell.y - m.y) < cell.radius) {
+                            let area = Math.PI * cell.radius * cell.radius + Math.PI * m.radius * m.radius;
+                            cell.radius = Math.sqrt(area / Math.PI);
+                            ejectedMasses.splice(i, 1);
+                        }
+                    }
+
+                    // Virus Explosion
+                    if (virusesEnabled) {
+                        for (let i = 0; i < viruses.length; i++) {
+                            let v = viruses[i];
+                            if (cell.radius > v.radius && Math.hypot(cell.x - v.x, cell.y - v.y) < cell.radius) {
+                                while (cell.radius > 20 && p.cells.length < 16) {
+                                    cell.radius /= 1.414;
+                                    let angle = Math.random() * Math.PI * 2;
+                                    let newCell = new Cell(cell.x, cell.y, cell.radius, p.color, p);
+                                    newCell.vx = Math.cos(angle) * 10;
+                                    newCell.vy = Math.sin(angle) * 10;
+                                    newCell.remergeTimer = 400;
+                                    p.cells.push(newCell);
+                                }
+                                viruses.splice(i, 1);
+                                spawnVirus();
+                                break;
+                            }
+                        }
+                    }
+
+                    // Eat Other Players
+                    players.forEach(p2 => {
+                        if (p === p2) return;
+                        for (let j = p2.cells.length - 1; j >= 0; j--) {
+                            let cell2 = p2.cells[j];
+                            if (cell.radius > cell2.radius * 1.12) {
+                                let dist = Math.hypot(cell.x - cell2.x, cell.y - cell2.y);
+                                if (dist < cell.radius - cell2.radius / 3) {
+                                    let area = Math.PI * cell.radius * cell.radius + Math.PI * cell2.radius * cell2.radius;
+                                    cell.radius = Math.sqrt(area / Math.PI);
+                                    p2.cells.splice(j, 1);
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+
+            // Camera Setup
+            ctx.clearRect(0, 0, width, height);
+            const human = players[0];
+            const cam = human ? human.getCenter() : { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+
+            ctx.save();
+            ctx.translate(width / 2 - cam.x, height / 2 - cam.y);
+
+            // Viewport Bounds for Culling
+            const viewMinX = cam.x - width / 2 - 100;
+            const viewMaxX = cam.x + width / 2 + 100;
+            const viewMinY = cam.y - height / 2 - 100;
+            const viewMaxY = cam.y + height / 2 + 100;
+
+            // Grid Lines (Only draw visible area)
+            ctx.strokeStyle = '#222226';
+            ctx.lineWidth = 1;
+            const gridSize = 60;
+            const startX = Math.max(0, Math.floor(viewMinX / gridSize) * gridSize);
+            const endX = Math.min(WORLD_SIZE, Math.ceil(viewMaxX / gridSize) * gridSize);
+            const startY = Math.max(0, Math.floor(viewMinY / gridSize) * gridSize);
+            const endY = Math.min(WORLD_SIZE, Math.ceil(viewMaxY / gridSize) * gridSize);
+
+            for (let x = startX; x <= endX; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, startY);
+                ctx.lineTo(x, endY);
+                ctx.stroke();
+            }
+            for (let y = startY; y <= endY; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(startX, y);
+                ctx.lineTo(endX, y);
+                ctx.stroke();
+            }
+
+            // Map Border Accent
+            ctx.strokeStyle = '#ff0055';
+            ctx.lineWidth = 6;
+            ctx.strokeRect(0, 0, WORLD_SIZE, WORLD_SIZE);
+
+            // Draw Visible Foods (Frustum Culling)
+            foods.forEach(f => {
+                if (f.x >= viewMinX && f.x <= viewMaxX && f.y >= viewMinY && f.y <= viewMaxY) {
+                    ctx.fillStyle = f.color;
+                    ctx.beginPath();
+                    ctx.arc(f.x, f.y, f.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            });
+
+            // Draw Ejected Masses
+            ejectedMasses.forEach(m => {
+                if (m.x >= viewMinX && m.x <= viewMaxX && m.y >= viewMinY && m.y <= viewMaxY) {
+                    ctx.fillStyle = m.color;
+                    ctx.beginPath();
+                    ctx.arc(m.x, m.y, m.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.strokeStyle = '#000';
+                    ctx.lineWidth = 1;
+                    ctx.stroke();
+                }
+            });
+
+            // Draw Viruses
+            if (virusesEnabled) {
+                viruses.forEach(v => {
+                    if (v.x >= viewMinX && v.x <= viewMaxX && v.y >= viewMinY && v.y <= viewMaxY) {
+                        ctx.fillStyle = '#0f381e';
+                        ctx.strokeStyle = '#00ff66';
+                        ctx.lineWidth = 3;
+                        ctx.beginPath();
+                        const spikes = 18;
+                        for (let i = 0; i < spikes; i++) {
+                            let angle = (i / spikes) * Math.PI * 2;
+                            let r = (i % 2 === 0) ? v.radius : v.radius - 5;
+                            let vx = v.x + Math.cos(angle) * r;
+                            let vy = v.y + Math.sin(angle) * r;
+                            if (i === 0) ctx.moveTo(vx, vy);
+                            else ctx.lineTo(vx, vy);
+                        }
+                        ctx.closePath();
+                        ctx.fill();
+                        ctx.stroke();
+                    }
+                });
+            }
+
+            // Sort & Draw Cells
+            let allCells = [];
+            players.forEach(p => p.cells.forEach(c => allCells.push(c)));
+            allCells.sort((a, b) => a.radius - b.radius);
+
+            allCells.forEach(cell => {
+                if (cell.x + cell.radius >= viewMinX && cell.x - cell.radius <= viewMaxX &&
+                    cell.y + cell.radius >= viewMinY && cell.y - cell.radius <= viewMaxY) {
+                    
+                    ctx.fillStyle = cell.color;
+                    ctx.beginPath();
+                    ctx.arc(cell.x, cell.y, cell.radius, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+
+                    if (cell.radius > 12) {
+                        ctx.fillStyle = '#ffffff';
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'middle';
+                        ctx.font = `bold ${Math.max(11, cell.radius * 0.32)}px sans-serif`;
+                        ctx.fillText(cell.owner.name, cell.x, cell.y - (cell.radius > 26 ? 6 : 0));
+                        if (cell.radius > 26) {
+                            ctx.font = `${Math.max(9, cell.radius * 0.22)}px sans-serif`;
+                            ctx.fillText(cell.mass, cell.x, cell.y + cell.radius * 0.25);
+                        }
+                    }
+                }
+            });
+
+            ctx.restore();
+
+            // UI Updates
+            if (human) {
+                document.getElementById('score').innerText = human.getTotalMass();
+            }
+
+            let sortedPlayers = [...players].sort((a, b) => b.getTotalMass() - a.getTotalMass());
+            let lbHtml = '';
+            for (let i = 0; i < Math.min(5, sortedPlayers.length); i++) {
+                let p = sortedPlayers[i];
+                let isUser = human && p === human;
+                lbHtml += `<li style="${isUser ? 'color: #00ff66; font-weight: bold;' : ''}">${p.name}: ${p.getTotalMass()}</li>`;
+            }
+            document.getElementById('lb-list').innerHTML = lbHtml;
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        init();
+        gameLoop();
+    </script>
+</body>
+</html>
